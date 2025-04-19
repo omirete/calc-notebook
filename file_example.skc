@@ -1,0 +1,25 @@
+# Metadata
+Name: My first calc note
+Author: Me
+Size: A4
+Orientation: Portrait
+Units: mm
+SKC Version: 0.0.1
+
+# Page 1
+## Data
+550e8400-e29b-41d4-a716-446655440000 = {"label": "a", "value": "123*L", "position": [10.5, 250.3], "size": 12}
+550e8400-e29b-41d4-a716-446655440001 = {"label": "m", "value": "8.2*kg", "position": [15.0, 200.0], "size": 12}
+550e8400-e29b-41d4-a716-446655440002 = {"label": "P", "value": "9.81*m/s^2 * ${550e8400-e29b-41d4-a716-446655440001}", "position": [20.0, 150.5], "size": 12}
+550e8400-e29b-41d4-a716-446655440003 = {"label": "Fx", "value": "${550e8400-e29b-41d4-a716-446655440002}*sin(20º)", "position": [25.5, 100.2], "size": 12}
+
+## Shapes (images, vectors, simple geometries)
+550e8400-e29b-41d4-a716-446655440004 = {"type": "circle", "center": [50.0, 50.0], "radius": 25.0, "color": "red", "thickness": 2.0}
+550e8400-e29b-41d4-a716-446655440005 = {"type": "rectangle", "start": [100.0, 100.0], "width": 40.0, "height": 20.0, "color": "blue", "thickness": 2.0}
+550e8400-e29b-41d4-a716-446655440006 = {"type": "line", "start": [10.0, 10.0], "end": [90.0, 90.0], "color": "green", "thickness": 2.0}
+550e8400-e29b-41d4-a716-446655440007 = {"type": "polygon", "vertices": [[30.0, 30.0], [60.0, 30.0], [45.0, 60.0]], "color": "yellow", "thickness": 2.0}
+550e8400-e29b-41d4-a716-446655440008 = {"type": "svg", "data": "<svg><path></path></svg>", "position": [3.2, 40.0], "scale": 1.5}
+
+## Paths 
+{"boundingBox": {"start": [10.2, 20], "dimensions": [10.10, 20.23]}, "points": [[10.2, 10.4, 0.4],[10.2, 10.4, 0.3],[10.2, 10.4, 0.4],[10.2, 10.4, 1.0]]}
+{"boundingBox": {"start": [60.2, 20], "dimensions": [10.10, 20.23]}, "points": [[10.2, 10.4, 0.4],[10.2, 10.4, 0.3],[10.2, 10.4, 0.4],[10.2, 10.4, 1.0]]}

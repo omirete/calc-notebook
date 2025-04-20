@@ -30,7 +30,7 @@ export default function SketchScreen(): JSX.Element {
     <View style={styles.container}>
       <Toolbar activeTool={tool} onSelectTool={setTool} />
       {/* <SketchCanvas tool={tool} document={doc} onUpdateDocument={setDoc} /> */}
-      <SketchCanvas />
+      <SketchCanvas tool={tool} />
     </View>
   );
 }

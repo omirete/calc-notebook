@@ -15,6 +15,7 @@ const tools: Tool[] = [
     "text",
     "select",
     "move",
+    "clear",
     "scale",
 ];
 

@@ -95,5 +95,6 @@ export type Tool =
     | "text"
     | "select"
     | "move"
+    | "clear"
     | "scale";
     

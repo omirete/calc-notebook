@@ -1,8 +1,8 @@
-import React, { FC, useCallback, useEffect, useState } from "react";
+import React, { FC, useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, StyleSheet } from "react-native";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
-import { Canvas, Path, Skia, SkPath, Text, useFont } from "@shopify/react-native-skia";
-import { runOnJS, useDerivedValue, useSharedValue } from "react-native-reanimated";
+import { Canvas, Path, Skia, SkiaDomView, SkPath, useFont } from "@shopify/react-native-skia";
+import { runOnJS, useSharedValue } from "react-native-reanimated";
 import { Point, Tool } from "@/types/sketch";
 
 interface SketchCanvasProps {
@@ -11,7 +11,7 @@ interface SketchCanvasProps {
 
 const SketchCanvas: FC<SketchCanvasProps> = ({ tool }) => {
   const { width, height } = Dimensions.get("window");
-
+  const canvasRef = useRef<SkiaDomView>(null);
   useEffect(() => {
     if (tool === 'clear') {
       setMyPaths([]);
@@ -28,11 +28,16 @@ const SketchCanvas: FC<SketchCanvasProps> = ({ tool }) => {
   const appendPath = useCallback((newPath: SkPath) => {
     setMyPaths((prev) => [...prev, newPath]);
   }, []);
+  const redrawCanvas = useCallback(() => {
+    canvasRef.current?.redraw();
+  }, []);
 
   const [myPaths, setMyPaths] = useState<SkPath[]>([])
 
   const gesture = Gesture.Pan()
     .onBegin(({ x, y, stylusData }) => {
+      if (tool !== 'pencil') return;
+      if (stylusData?.pressure === undefined) return;
       myStylusData.value = stylusData;
       const p = Skia.Path.Make();
       p.moveTo(x, y);
@@ -44,6 +49,8 @@ const SketchCanvas: FC<SketchCanvasProps> = ({ tool }) => {
       }];
     })
     .onChange(({ x, y, stylusData }) => {
+      if (tool !== 'pencil') return;
+      if (stylusData?.pressure === undefined) return;
       myStylusData.value = stylusData;
       livePath.value.lineTo(x, y);
       livePoints.value.push({
@@ -51,8 +58,11 @@ const SketchCanvas: FC<SketchCanvasProps> = ({ tool }) => {
         y: y,
         pressure: stylusData?.pressure ?? 1
       });
+      runOnJS(redrawCanvas)();
     })
-    .onEnd(() => {
+    .onEnd(({ stylusData }) => {
+      if (tool !== 'pencil') return;
+      if (stylusData?.pressure === undefined) return;
       const svgString = livePath.value.toSVGString()
       const newPath = Skia.Path.MakeFromSVGString(svgString);
       if (newPath) {
@@ -60,23 +70,9 @@ const SketchCanvas: FC<SketchCanvasProps> = ({ tool }) => {
       }
     });
 
-  // derived Skia string
-  const displayText = useDerivedValue(() =>
-    myStylusData.value ? JSON.stringify(myStylusData.value, null, 2) : 'test'
-  );
-
   return (
     <GestureDetector gesture={gesture}>
-      <Canvas style={[styles.canvas, { width, height }]}>
-        {font && (
-          <Text
-            x={20}
-            y={40}
-            text={displayText ?? 'Loading...'}
-            font={font}
-            color="black"
-          />
-        )}
+      <Canvas style={[styles.canvas, { width, height }]} ref={canvasRef}>
         {myPaths && myPaths.map((path, index) => (
           <Path
             key={index}

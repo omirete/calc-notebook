@@ -35,4 +35,20 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-android
+# Ignore everything in the android folder
+android/**
+
+# Allow specific files to be tracked
+!android/app/src/main/java/com/anonymous/calcnotebook/MainApplication.kt
+!android/app/src/main/java/com/anonymous/calcnotebook/drawingboard/
+
+# Ensure parent directories are tracked
+!android/
+!android/app/
+!android/app/src/
+!android/app/src/main/
+!android/app/src/main/java/
+!android/app/src/main/java/com/
+!android/app/src/main/java/com/anonymous/
+!android/app/src/main/java/com/anonymous/calcnotebook/
+!android/app/src/main/java/com/anonymous/calcnotebook/drawingboard/

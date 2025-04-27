@@ -86,15 +86,3 @@ export interface SketchDocument {
     metadata: Metadata;
     pages: Page[];
 }
-
-export type Tool =
-    | "pencil"
-    | "line"
-    | "rectangle"
-    | "ellipse"
-    | "text"
-    | "select"
-    | "move"
-    | "clear"
-    | "scale";
-    

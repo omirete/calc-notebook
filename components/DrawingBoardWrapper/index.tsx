@@ -1,11 +1,10 @@
+import { Tool } from '@/types/tool';
 import { forwardRef } from 'react';
 import {
     requireNativeComponent,
     type HostComponent,
     type ViewProps,
 } from 'react-native';
-
-export type Tool = 'draw' | 'erase' | 'select';
 
 type Props = ViewProps & {
     tool?: Tool;

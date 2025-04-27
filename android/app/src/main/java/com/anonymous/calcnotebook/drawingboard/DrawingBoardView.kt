@@ -54,13 +54,24 @@ class DrawingBoardView @JvmOverloads constructor(
     /*  Internal state  */
     private val strokes = mutableListOf<Stroke>()
     private var currentStroke: Stroke? = null
+
+    // Eraser live variables and eraser boundary indicator
     private var currentErasePath = Path()
+    private var currentEraseX: Float = 0f
+    private var currentEraseY: Float = 0f
     private val eraserPaint = Paint().apply {
         color = Color.TRANSPARENT
         strokeWidth = 30f  // Increased eraser size for better usability
         xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
+    // Paint for drawing eraser collision boundary indicator
+    private val eraserBoundaryPaint = Paint().apply {
+        color = Color.RED  // change color as desired
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
         isAntiAlias = true
     }
 
@@ -141,7 +152,11 @@ class DrawingBoardView @JvmOverloads constructor(
             ToolMode.ERASE -> {
                 currentErasePath.reset()
                 currentErasePath.moveTo(x, y)
+                currentEraseX = x
+                currentEraseY = y
                 queueEraseOperation(x, y)
+                processEraseQueue()  // Process immediately for live erasing
+                requestRender()
             }
             ToolMode.SELECT -> { /* demo omits selection for brevity */ }
         }
@@ -164,7 +179,11 @@ class DrawingBoardView @JvmOverloads constructor(
             }
             ToolMode.ERASE -> {
                 currentErasePath.lineTo(x, y)
+                currentEraseX = x
+                currentEraseY = y
                 queueEraseOperation(x, y)
+                processEraseQueue()  // Process continuously during drag
+                requestRender()
             }
             ToolMode.SELECT -> Unit
         }
@@ -194,6 +213,7 @@ class DrawingBoardView @JvmOverloads constructor(
             ToolMode.ERASE -> {
                 processEraseQueue() // Process any remaining erase operations
                 currentErasePath.reset()
+                requestRender()
             }
             ToolMode.SELECT -> Unit
         }
@@ -205,10 +225,27 @@ class DrawingBoardView @JvmOverloads constructor(
         synchronized(eraseOperationQueue) {
             eraseOperationQueue.add(Pair(x, y))
         }
-        
+
         // Debounce erase operations to reduce processing load
         eraseDebouncer.removeCallbacks(eraseRunnable)
         eraseDebouncer.postDelayed(eraseRunnable, 16) // ~60fps
+    }
+
+    // Add this helper function somewhere in the class (for instance, just below processEraseQueue())
+    private fun distancePointToSegment(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        if (dx == 0f && dy == 0f) return hypot(px - x1, py - y1)
+        val t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        return when {
+            t < 0f -> hypot(px - x1, py - y1)
+            t > 1f -> hypot(px - x2, py - y2)
+            else -> {
+                val projX = x1 + t * dx
+                val projY = y1 + t * dy
+                hypot(px - projX, py - projY)
+            }
+        }
     }
     
     private fun processEraseQueue() {
@@ -223,16 +260,32 @@ class DrawingBoardView @JvmOverloads constructor(
         val eraserRadius = eraserPaint.strokeWidth / 2f
         val toRemove = mutableListOf<Stroke>()
         
-        // Build a spatial index for more efficient point lookup
         for (stroke in strokes) {
-            for (point in points) {
-                val (x, y) = point
-                if (stroke.points.any { p ->
-                    hypot((p.x + stroke.translation.x) - x, (p.y + stroke.translation.y) - y) < eraserRadius
-                }) {
-                    toRemove.add(stroke)
-                    break // No need to check more points for this stroke
+            var shouldRemove = false
+            for ((eraserX, eraserY) in points) {
+                val pts = stroke.points
+                if (pts.isEmpty()) continue
+                if (pts.size == 1) {
+                    // Single point stroke
+                    if (hypot(pts[0].x - eraserX, pts[0].y - eraserY) < eraserRadius) {
+                        shouldRemove = true
+                        break
+                    }
+                } else {
+                    // Check each segment between consecutive points
+                    for (i in 0 until pts.size - 1) {
+                        val p1 = pts[i]
+                        val p2 = pts[i + 1]
+                        if (distancePointToSegment(eraserX, eraserY, p1.x, p1.y, p2.x, p2.y) < eraserRadius) {
+                            shouldRemove = true
+                            break
+                        }
+                    }
                 }
+                if (shouldRemove) break
+            }
+            if (shouldRemove) {
+                toRemove.add(stroke)
             }
         }
         
@@ -279,7 +332,7 @@ class DrawingBoardView @JvmOverloads constructor(
                                 }
                                 pathCache[stroke] = path
                             }
-                            
+
                             stroke.paint.color = stroke.color
                             stroke.paint.strokeWidth = stroke.widthFor(stroke.points.last())
                             c.drawPath(pathCache[stroke]!!, stroke.paint)
@@ -296,7 +349,7 @@ class DrawingBoardView @JvmOverloads constructor(
                     canvas.drawBitmap(it, 0f, 0f, null)
                 }
             }
-            
+
             // Draw the current stroke if exists
             currentStroke?.let { s ->
                 val path = pathCache[s] ?: Path()
@@ -321,6 +374,13 @@ class DrawingBoardView @JvmOverloads constructor(
             // Draw eraser overlay if active
             if (toolMode == ToolMode.ERASE && !currentErasePath.isEmpty) {
                 canvas.drawPath(currentErasePath, eraserPaint)
+                // Draw collision boundary indicator circle
+                canvas.drawCircle(
+                    currentEraseX,
+                    currentEraseY,
+                    eraserPaint.strokeWidth / 2f,
+                    eraserBoundaryPaint
+                )
             }
         } finally {
             holder.unlockCanvasAndPost(canvas)

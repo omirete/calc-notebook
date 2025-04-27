@@ -9,7 +9,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "jest --watchAll",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "ktfmt": "java -jar ./ktfmt-0.54.jar ./android/app/src/main/java/com/anonymous/calcnotebook"
   },
   "jest": {
     "preset": "jest-expo"

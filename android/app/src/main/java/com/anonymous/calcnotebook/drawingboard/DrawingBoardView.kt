@@ -33,7 +33,12 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   private val renderThread = Executors.newSingleThreadExecutor()
   private val mainHandler = Handler(Looper.getMainLooper())
   private var surfaceReady = false
+
+  // Path data structures - simplified for stability
   private val pathCache = HashMap<Stroke, Path>()
+
+  // Store width values separately for segments, keyed by stroke
+  private val segmentWidths = HashMap<Stroke, MutableList<Float>>()
 
   // Bitmap cache for completed strokes
   private var cachedBitmap: Bitmap? = null
@@ -81,6 +86,7 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   /*  Internal state  */
   private val strokes = mutableListOf<Stroke>()
   private var currentStroke: Stroke? = null
+  private var lastPoint: StrokePoint? = null
 
   // Eraser live variables and eraser boundary indicator
   private var currentErasePath = Path()
@@ -171,12 +177,23 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   private fun pointerDown(x: Float, y: Float, pressure: Float) {
     // Clear any previous prediction
     predictedPoint = null
+    lastPoint = null
+
     when (toolMode) {
       ToolMode.DRAW -> {
+        val newPoint = StrokePoint(x, y, pressure)
         currentStroke =
             Stroke(strokeColor, thicknessFactor).also {
-              it.points.add(StrokePoint(x, y, pressure))
-              pathCache[it] = Path().apply { moveTo(x, y) }
+              it.points.add(newPoint)
+              // Initialize the path for this stroke
+              val path = Path()
+              path.moveTo(x, y)
+              pathCache[it] = path
+
+              // Initialize segment widths list
+              segmentWidths[it] = mutableListOf()
+
+              lastPoint = newPoint
             }
         requestRender()
       }
@@ -212,20 +229,40 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
     when (toolMode) {
       ToolMode.DRAW ->
           currentStroke?.let { stroke ->
-            stroke.points.add(StrokePoint(x, y, pressure))
-            pathCache[stroke]?.lineTo(x, y)
-            // Update prediction if we have at least one prior point
-            if (stroke.points.size >= predictAfterNPoints) {
-              val last = stroke.points.last()
-              val secondLast = stroke.points[stroke.points.size - 2]
-              val dx = last.x - secondLast.x
-              val dy = last.y - secondLast.y
-              predictedPoint =
-                  StrokePoint(
-                      last.x + dx * predictionMultiplier,
-                      last.y + dy * predictionMultiplier,
-                      last.pressure)
+            try {
+              val newPoint = StrokePoint(x, y, pressure)
+              stroke.points.add(newPoint)
+
+              // Add to path but don't create segments - use a single path with pressure data
+              pathCache[stroke]?.lineTo(x, y)
+
+              // Store width for this segment (avg pressure * thickness)
+              if (lastPoint != null) {
+                val width =
+                    ((lastPoint!!.pressure + newPoint.pressure) / 2) * stroke.thicknessFactor + 1f
+                segmentWidths[stroke]?.add(width)
+              }
+
+              // Save this point as the last point
+              lastPoint = newPoint
+
+              // Update prediction if we have enough points
+              if (stroke.points.size >= predictAfterNPoints) {
+                val last = stroke.points.last()
+                val secondLast = stroke.points[stroke.points.size - 2]
+                val dx = last.x - secondLast.x
+                val dy = last.y - secondLast.y
+                predictedPoint =
+                    StrokePoint(
+                        last.x + dx * predictionMultiplier,
+                        last.y + dy * predictionMultiplier,
+                        last.pressure)
+              }
+            } catch (e: Exception) {
+              // Log error but continue - prevent crash
+              e.printStackTrace()
             }
+
             requestRender()
           }
       ToolMode.ERASE -> {
@@ -270,43 +307,79 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   }
 
   private fun pointerUp() {
-    when (toolMode) {
-      ToolMode.DRAW ->
-          currentStroke?.let {
-            strokes.add(it)
+    try {
+      when (toolMode) {
+        ToolMode.DRAW ->
+            currentStroke?.let {
+              strokes.add(it)
 
-            // Once the stroke is complete, render it to the cached bitmap
-            synchronized(this) {
-              cachedCanvas?.let { canvas ->
-                if (pathCache.containsKey(it)) {
-                  it.paint.color = it.color
-                  it.paint.strokeWidth = it.widthFor(it.points.last())
-                  canvas.drawPath(pathCache[it]!!, it.paint)
-                }
-              }
+              // Once the stroke is complete, render it to the cached bitmap
+              drawStrokeToBitmap(it)
+
+              currentStroke = null
+              lastPoint = null
+              // Clear predicted point when stroke ends
+              predictedPoint = null
+              requestRender()
             }
-
-            currentStroke = null
-            // Clear predicted point when stroke ends
-            predictedPoint = null
-            requestRender()
-          }
-      ToolMode.ERASE -> {
-        processEraseQueue() // Process any remaining erase operations
-        currentErasePath.reset()
-        requestRender()
-      }
-      ToolMode.SELECT -> {
-        if (isDragging) {
-          isDragging = false
-          needsFullRedraw = true
-        } else if (isCreatingSelection && selectionStart != null && selectionEnd != null) {
-          // Finalize selection
-          updateSelectionFromRect()
-          // No longer creating selection
-          isCreatingSelection = false
+        ToolMode.ERASE -> {
+          processEraseQueue() // Process any remaining erase operations
+          currentErasePath.reset()
+          requestRender()
         }
-        requestRender()
+        ToolMode.SELECT -> {
+          if (isDragging) {
+            isDragging = false
+            needsFullRedraw = true
+          } else if (isCreatingSelection && selectionStart != null && selectionEnd != null) {
+            // Finalize selection
+            updateSelectionFromRect()
+            // No longer creating selection
+            isCreatingSelection = false
+          }
+          requestRender()
+        }
+      }
+    } catch (e: Exception) {
+      // Log error but prevent crash
+      e.printStackTrace()
+    }
+  }
+
+  private fun drawStrokeToBitmap(stroke: Stroke) {
+    synchronized(this) {
+      try {
+        val canvas = cachedCanvas ?: return
+        val path = pathCache[stroke] ?: return
+        val widths = segmentWidths[stroke] ?: return
+
+        // This is a simplification - in a production app, you'd want to draw
+        // each segment with its own width. For stability, we'll use a simpler approach:
+
+        // Get points from the stroke
+        val points = stroke.points
+        if (points.size < 2) return
+
+        // Draw segments between consecutive points
+        for (i in 0 until points.size - 1) {
+          if (i >= widths.size) break // Safety check
+
+          val p1 = points[i]
+          val p2 = points[i + 1]
+
+          // Create a small path for just this segment
+          val segmentPath = Path()
+          segmentPath.moveTo(p1.x + stroke.translation.x, p1.y + stroke.translation.y)
+          segmentPath.lineTo(p2.x + stroke.translation.x, p2.y + stroke.translation.y)
+
+          // Draw with the appropriate width
+          stroke.paint.color = stroke.color
+          stroke.paint.strokeWidth = widths[i]
+          canvas.drawPath(segmentPath, stroke.paint)
+        }
+      } catch (e: Exception) {
+        // Log but prevent crash
+        e.printStackTrace()
       }
     }
   }
@@ -469,20 +542,25 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   }
 
   private fun updateStrokePath(stroke: Stroke) {
-    // Recreate the path for the stroke with its current translation
-    val path = Path()
-    if (stroke.points.isNotEmpty()) {
-      val first = stroke.points[0]
-      path.moveTo(first.x + stroke.translation.x, first.y + stroke.translation.y)
+    try {
+      // Recreate the path for the stroke with its current translation
+      val path = Path()
+      if (stroke.points.isNotEmpty()) {
+        val first = stroke.points[0]
+        path.moveTo(first.x + stroke.translation.x, first.y + stroke.translation.y)
 
-      for (i in 1 until stroke.points.size) {
-        val point = stroke.points[i]
-        path.lineTo(point.x + stroke.translation.x, point.y + stroke.translation.y)
+        for (i in 1 until stroke.points.size) {
+          val point = stroke.points[i]
+          path.lineTo(point.x + stroke.translation.x, point.y + stroke.translation.y)
+        }
       }
-    }
 
-    // Update the path in the cache
-    pathCache[stroke] = path
+      // Update the path in the cache
+      pathCache[stroke] = path
+    } catch (e: Exception) {
+      // Prevent crash
+      e.printStackTrace()
+    }
   }
 
   // ───────────────────────── Eraser optimization ────────────────────────────────
@@ -495,8 +573,6 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
     eraseDebouncer.postDelayed(eraseRunnable, 16) // ~60fps
   }
 
-  // Add this helper function somewhere in the class (for instance, just below
-  // processEraseQueue())
   private fun distancePointToSegment(
       px: Float,
       py: Float,
@@ -521,69 +597,77 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   }
 
   private fun processEraseQueue() {
-    val points =
-        synchronized(eraseOperationQueue) {
-          val pts = eraseOperationQueue.toList()
-          eraseOperationQueue.clear()
-          pts
-        }
-
-    if (points.isEmpty()) return
-
-    val eraserRadius = eraserPaint.strokeWidth / 2f
-    val toRemove = mutableListOf<Stroke>()
-
-    for (stroke in strokes) {
-      var shouldRemove = false
-      for ((eraserX, eraserY) in points) {
-        val pts = stroke.points
-        if (pts.isEmpty()) continue
-        if (pts.size == 1) {
-          // Single point stroke
-          if (hypot(
-              pts[0].x + stroke.translation.x - eraserX,
-              pts[0].y + stroke.translation.y - eraserY) < eraserRadius) {
-            shouldRemove = true
-            break
+    try {
+      val points =
+          synchronized(eraseOperationQueue) {
+            val pts = eraseOperationQueue.toList()
+            eraseOperationQueue.clear()
+            pts
           }
-        } else {
-          // Check each segment between consecutive points
-          for (i in 0 until pts.size - 1) {
-            val p1 = pts[i]
-            val p2 = pts[i + 1]
-            if (distancePointToSegment(
-                eraserX,
-                eraserY,
-                p1.x + stroke.translation.x,
-                p1.y + stroke.translation.y,
-                p2.x + stroke.translation.x,
-                p2.y + stroke.translation.y) < eraserRadius) {
+
+      if (points.isEmpty()) return
+
+      val eraserRadius = eraserPaint.strokeWidth / 2f
+      val toRemove = mutableListOf<Stroke>()
+
+      for (stroke in strokes) {
+        var shouldRemove = false
+        for ((eraserX, eraserY) in points) {
+          val pts = stroke.points
+          if (pts.isEmpty()) continue
+          if (pts.size == 1) {
+            // Single point stroke
+            if (hypot(
+                pts[0].x + stroke.translation.x - eraserX,
+                pts[0].y + stroke.translation.y - eraserY) < eraserRadius) {
               shouldRemove = true
               break
             }
+          } else {
+            // Check each segment between consecutive points
+            for (i in 0 until pts.size - 1) {
+              val p1 = pts[i]
+              val p2 = pts[i + 1]
+              if (distancePointToSegment(
+                  eraserX,
+                  eraserY,
+                  p1.x + stroke.translation.x,
+                  p1.y + stroke.translation.y,
+                  p2.x + stroke.translation.x,
+                  p2.y + stroke.translation.y) < eraserRadius) {
+                shouldRemove = true
+                break
+              }
+            }
           }
+          if (shouldRemove) break
         }
-        if (shouldRemove) break
-      }
-      if (shouldRemove) {
-        toRemove.add(stroke)
-      }
-    }
-
-    if (toRemove.isNotEmpty()) {
-      strokes.removeAll(toRemove)
-      selectedStrokes.removeAll(toRemove)
-      toRemove.forEach { pathCache.remove(it) }
-
-      // Update selection bounds if necessary
-      if (selectedStrokes.isNotEmpty()) {
-        updateSelectionBounds()
-      } else {
-        selectionBounds.setEmpty()
+        if (shouldRemove) {
+          toRemove.add(stroke)
+        }
       }
 
-      needsFullRedraw = true
-      requestRender()
+      if (toRemove.isNotEmpty()) {
+        strokes.removeAll(toRemove)
+        selectedStrokes.removeAll(toRemove)
+        toRemove.forEach {
+          pathCache.remove(it)
+          segmentWidths.remove(it)
+        }
+
+        // Update selection bounds if necessary
+        if (selectedStrokes.isNotEmpty()) {
+          updateSelectionBounds()
+        } else {
+          selectionBounds.setEmpty()
+        }
+
+        needsFullRedraw = true
+        requestRender()
+      }
+    } catch (e: Exception) {
+      // Prevent crashes
+      e.printStackTrace()
     }
   }
 
@@ -593,7 +677,14 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
 
   private fun requestRender() {
     if (!surfaceReady) return
-    renderThread.execute { renderFrame() }
+    renderThread.execute {
+      try {
+        renderFrame()
+      } catch (e: Exception) {
+        // Prevent rendering thread crashes
+        e.printStackTrace()
+      }
+    }
   }
 
   private fun renderFrame() {
@@ -609,20 +700,8 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
             c.drawColor(boardColor, PorterDuff.Mode.SRC)
 
             for (stroke in strokes) {
-              if (!pathCache.containsKey(stroke)) {
-                // Regenerate path if not in cache
-                val path = Path()
-                stroke.points.forEachIndexed { idx, p ->
-                  val px = p.x + stroke.translation.x
-                  val py = p.y + stroke.translation.y
-                  if (idx == 0) path.moveTo(px, py) else path.lineTo(px, py)
-                }
-                pathCache[stroke] = path
-              }
-
-              stroke.paint.color = stroke.color
-              stroke.paint.strokeWidth = stroke.widthFor(stroke.points.last())
-              c.drawPath(pathCache[stroke]!!, stroke.paint)
+              // Draw each stroke to the cached bitmap
+              drawStrokeToBitmap(stroke)
             }
           }
         }
@@ -639,21 +718,46 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
 
       // Draw the current stroke if exists
       currentStroke?.let { s ->
-        val path = pathCache[s] ?: Path()
-        s.paint.color = s.color
-        s.paint.strokeWidth = s.widthFor(s.points.last())
-        canvas.drawPath(path, s.paint)
+        // Draw segments of the current stroke
+        val points = s.points
+        val widths = segmentWidths[s] ?: mutableListOf()
+
+        if (points.size > 1) {
+          for (i in 0 until points.size - 1) {
+            if (i >= widths.size) break // Safety check
+
+            val p1 = points[i]
+            val p2 = points[i + 1]
+
+            // Create a small path for this segment
+            val segmentPath = Path()
+            segmentPath.moveTo(p1.x + s.translation.x, p1.y + s.translation.y)
+            segmentPath.lineTo(p2.x + s.translation.x, p2.y + s.translation.y)
+
+            // Draw with appropriate width
+            s.paint.color = s.color
+            s.paint.strokeWidth = widths[i]
+            canvas.drawPath(segmentPath, s.paint)
+          }
+        }
+
         // Draw predicted line if available
         predictedPoint?.let { pred ->
-          val predPath =
-              Path().apply {
-                moveTo(s.points.last().x + s.translation.x, s.points.last().y + s.translation.y)
-                lineTo(pred.x + s.translation.x, pred.y + s.translation.y)
-              }
-          predictedStrokeColor?.let { color ->
-            val tempPaint = Paint(s.paint).apply { this.color = color }
-            canvas.drawPath(predPath, tempPaint)
-          } ?: canvas.drawPath(predPath, s.paint)
+          if (points.isNotEmpty()) {
+            val last = points.last()
+            val predPath = Path()
+            predPath.moveTo(last.x + s.translation.x, last.y + s.translation.y)
+            predPath.lineTo(pred.x + s.translation.x, pred.y + s.translation.y)
+
+            // Use the latest pressure for prediction
+            val predWidth = last.pressure * s.thicknessFactor + 1f
+            s.paint.strokeWidth = predWidth
+
+            predictedStrokeColor?.let { color ->
+              val tempPaint = Paint(s.paint).apply { this.color = color }
+              canvas.drawPath(predPath, tempPaint)
+            } ?: canvas.drawPath(predPath, s.paint)
+          }
         }
       }
 
@@ -683,8 +787,16 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
           canvas.drawRect(selectionBounds, selectionPaint)
         }
       }
+    } catch (e: Exception) {
+      // Log but don't crash
+      e.printStackTrace()
     } finally {
-      holder.unlockCanvasAndPost(canvas)
+      // Always unlock and post the canvas
+      try {
+        holder.unlockCanvasAndPost(canvas)
+      } catch (e: Exception) {
+        e.printStackTrace()
+      }
     }
   }
 }

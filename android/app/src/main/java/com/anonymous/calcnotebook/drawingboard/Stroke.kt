@@ -16,5 +16,5 @@ class Stroke(val color: Int, val thicknessFactor: Float) {
         style = Paint.Style.STROKE
       }
 
-  fun widthFor(point: StrokePoint): Float = point.pressure * thicknessFactor + 1f
+  fun widthFor(point: StrokePoint): Float = point.pressure * thicknessFactor
 }

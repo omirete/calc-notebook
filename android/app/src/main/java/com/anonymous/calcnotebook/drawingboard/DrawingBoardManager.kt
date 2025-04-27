@@ -30,4 +30,21 @@ class DrawingBoardManager(private val ctx: ReactApplicationContext)
 
     @ReactProp(name = "boardColor", customType = "Color", defaultInt = 0xFFFFFFFF.toInt())
     fun setBoardColor(view: DrawingBoardView, color: Int) { view.updateBoardColor(color) }
+
+
+    @ReactProp(name = "predictionMultiplier", defaultFloat = 0f)
+    fun setPredictionMultiplier(view: DrawingBoardView, multiplier: Float) {
+        view.predictionMultiplier = multiplier
+    }
+
+    @ReactProp(name = "predictedStrokeColor", customType = "Color")
+    fun setPredictedStrokeColor(view: DrawingBoardView, color: Int?) {
+        view.predictedStrokeColor = color
+    }
+
+    @ReactProp(name = "predictAfterNPoints", defaultInt = 30)
+    fun setPredictAfterNPoints(view: DrawingBoardView, n: Int) {
+        view.predictAfterNPoints = n
+    }
+    
 }

@@ -1,6 +1,6 @@
 // App.js - Example usage
 import React, { useState } from 'react';
-import { SafeAreaView, View, Button, StyleSheet, Text } from 'react-native';
+import { SafeAreaView, View, Button, StyleSheet, Text, TextInput } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { DrawingBoard, Tool } from '@/components/DrawingBoardWrapper';
 
@@ -8,6 +8,7 @@ export default function App() {
   const [tool, setTool] = useState<Tool>('draw');
   const [thickness, setThickness] = useState(2);
   const [color, setColor] = useState('#FFFFFF');
+  const [mult, setMult] = useState(5);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -53,6 +54,14 @@ export default function App() {
               />
             ))}
           </View>
+          <View>
+            <TextInput
+              placeholder="Prediction Multiplier"
+              keyboardType="numeric"
+              onChangeText={(text) => setMult(parseInt(text))}
+              value={mult.toString()}
+            />
+          </View>
         </View>
         <DrawingBoard
           tool={tool}
@@ -60,6 +69,9 @@ export default function App() {
           color={color}
           boardColor='#1E1E1E'
           style={{ flex: 1, width: '100%', height: '100%' }}
+          predictionMultiplier={mult}
+          predictedStrokeColor='#FF00FF'
+          predictAfterNPoints={30}
         />
       </SafeAreaView>
     </GestureHandlerRootView>

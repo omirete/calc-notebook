@@ -12,6 +12,9 @@ type Props = ViewProps & {
     thickness?: number;
     color?: string;
     boardColor?: string;
+    predictionMultiplier?: number;
+    predictedStrokeColor?: string;
+    predictAfterNPoints?: number;
 };
 
 const COMPONENT = 'RNDrawingBoard';

@@ -64,6 +64,12 @@ class DrawingBoardView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
+    // Variables for predictive stylus input
+    var predictionMultiplier: Float = 3f
+    var predictedStrokeColor: Int? = null
+    var predictAfterNPoints: Int = 30
+    private var predictedPoint: StrokePoint? = null
+    
     // ───────────────────────── Surface callbacks ──────────────────────────────
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -105,25 +111,13 @@ class DrawingBoardView @JvmOverloads constructor(
         val x = ev.x
         val y = ev.y
         val p = ev.pressure
-        
+
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pointerDown(x, y, p)
             }
             MotionEvent.ACTION_MOVE -> {
-                // Process last point only for smoother performance
-                // Only process historical points if we're not under heavy load
-                if (ev.historySize > 0 && ev.historySize < 10) {
-                    // Process a subset of historical points for balance between smoothness and performance
-                    val step = maxOf(1, ev.historySize / 3)
-                    var i = 0
-                    while (i < ev.historySize) {
-                        pointerMove(ev.getHistoricalX(i), ev.getHistoricalY(i), ev.getHistoricalPressure(i))
-                        i += step
-                    }
-                }
-                
-                // Always process the latest point
+                // Only process the current point to update predictedPoint reliably
                 pointerMove(x, y, p)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -134,6 +128,8 @@ class DrawingBoardView @JvmOverloads constructor(
     }
 
     private fun pointerDown(x: Float, y: Float, pressure: Float) {
+        // Clear any previous prediction
+        predictedPoint = null
         when (toolMode) {
             ToolMode.DRAW -> {
                 currentStroke = Stroke(strokeColor, thicknessFactor).also {
@@ -153,9 +149,17 @@ class DrawingBoardView @JvmOverloads constructor(
 
     private fun pointerMove(x: Float, y: Float, pressure: Float) {
         when (toolMode) {
-            ToolMode.DRAW -> currentStroke?.let {
-                it.points.add(StrokePoint(x, y, pressure))
-                pathCache[it]?.lineTo(x, y)
+            ToolMode.DRAW -> currentStroke?.let { stroke ->
+                stroke.points.add(StrokePoint(x, y, pressure))
+                pathCache[stroke]?.lineTo(x, y)
+                // Update prediction if we have at least one prior point
+                if (stroke.points.size >= predictAfterNPoints) {
+                    val last = stroke.points.last()
+                    val secondLast = stroke.points[stroke.points.size - 2]
+                    val dx = last.x - secondLast.x
+                    val dy = last.y - secondLast.y
+                    predictedPoint = StrokePoint(last.x + dx * predictionMultiplier, last.y + dy * predictionMultiplier, last.pressure)
+                }
                 requestRender()
             }
             ToolMode.ERASE -> {
@@ -181,8 +185,10 @@ class DrawingBoardView @JvmOverloads constructor(
                         }
                     }
                 }
-                
+        
                 currentStroke = null
+                // Clear predicted point when stroke ends
+                predictedPoint = null
                 requestRender()
             }
             ToolMode.ERASE -> {
@@ -243,12 +249,9 @@ class DrawingBoardView @JvmOverloads constructor(
     private var renderRequested = false
     
     private fun requestRender() {
-        if (!surfaceReady || renderRequested) return
-        renderRequested = true
-        
+        if (!surfaceReady) return
         renderThread.execute {
             renderFrame()
-            mainHandler.post { renderRequested = false }
         }
     }
     
@@ -300,6 +303,19 @@ class DrawingBoardView @JvmOverloads constructor(
                 s.paint.color = s.color
                 s.paint.strokeWidth = s.widthFor(s.points.last())
                 canvas.drawPath(path, s.paint)
+                // Draw predicted line if available
+                predictedPoint?.let { pred ->
+                    val predPath = Path().apply {
+                        moveTo(s.points.last().x + s.translation.x, s.points.last().y + s.translation.y)
+                        lineTo(pred.x + s.translation.x, pred.y + s.translation.y)
+                    }
+                    predictedStrokeColor?.let { color ->
+                        val tempPaint = Paint(s.paint).apply {
+                            this.color = color
+                        }
+                        canvas.drawPath(predPath, tempPaint)
+                    } ?: canvas.drawPath(predPath, s.paint)
+                }
             }
             
             // Draw eraser overlay if active

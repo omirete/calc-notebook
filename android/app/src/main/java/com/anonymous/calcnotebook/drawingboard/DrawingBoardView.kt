@@ -8,12 +8,23 @@ import android.util.AttributeSet
 import android.view.*
 import java.util.concurrent.Executors
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
 
 class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) :
     SurfaceView(context, attrs), SurfaceHolder.Callback {
 
   // PUBLIC PROPERTIES EXPOSED TO JS ↓↓↓
   var toolMode: ToolMode = ToolMode.DRAW
+    set(value) {
+      // Clear selection when switching away from SELECT mode
+      if (field == ToolMode.SELECT && value != ToolMode.SELECT) {
+        clearSelection()
+        requestRender()
+      }
+      field = value
+    }
+
   var thicknessFactor: Float = 1f
   var strokeColor: Int = Color.BLACK
   var boardColor: Int = Color.WHITE
@@ -33,6 +44,24 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
   private val eraseOperationQueue = mutableListOf<Pair<Float, Float>>()
   private val eraseDebouncer = Handler(Looper.getMainLooper())
   private val eraseRunnable = Runnable { processEraseQueue() }
+
+  // Selection properties
+  private var selectionStart: PointF? = null
+  private var selectionEnd: PointF? = null
+  private val selectedStrokes = mutableListOf<Stroke>()
+  private var selectionBounds = RectF()
+  private var isDragging = false
+  private var lastDragX = 0f
+  private var lastDragY = 0f
+  private var isCreatingSelection = false // Flag to track when we're actively creating a selection
+  private val selectionPaint =
+      Paint().apply {
+        color = Color.BLUE
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+        isAntiAlias = true
+      }
 
   fun updateBoardColor(color: Int) {
     boardColor = color
@@ -161,7 +190,20 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
         requestRender()
       }
       ToolMode.SELECT -> {
-        /* demo omits selection for brevity */
+        // Check if we're clicking inside the selection bounds when there are selected strokes
+        if (selectedStrokes.isNotEmpty() && selectionBounds.contains(x, y)) {
+          // Start dragging the selected strokes
+          isDragging = true
+          lastDragX = x
+          lastDragY = y
+        } else {
+          // Start a new selection
+          clearSelection()
+          selectionStart = PointF(x, y)
+          selectionEnd = PointF(x, y)
+          isCreatingSelection = true
+        }
+        requestRender()
       }
     }
   }
@@ -194,7 +236,36 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
         processEraseQueue() // Process continuously during drag
         requestRender()
       }
-      ToolMode.SELECT -> Unit
+      ToolMode.SELECT -> {
+        if (isDragging) {
+          // Calculate the drag delta
+          val dx = x - lastDragX
+          val dy = y - lastDragY
+
+          // Move all selected strokes by this delta
+          for (stroke in selectedStrokes) {
+            stroke.translation.x += dx
+            stroke.translation.y += dy
+
+            // Update the path in the cache
+            updateStrokePath(stroke)
+          }
+
+          // Update the selection bounds
+          selectionBounds.offset(dx, dy)
+
+          // Update last drag position
+          lastDragX = x
+          lastDragY = y
+
+          // Mark for redraw
+          needsFullRedraw = true
+        } else if (isCreatingSelection) {
+          // Update selection rectangle
+          selectionEnd?.set(x, y)
+        }
+        requestRender()
+      }
     }
   }
 
@@ -225,8 +296,193 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
         currentErasePath.reset()
         requestRender()
       }
-      ToolMode.SELECT -> Unit
+      ToolMode.SELECT -> {
+        if (isDragging) {
+          isDragging = false
+          needsFullRedraw = true
+        } else if (isCreatingSelection && selectionStart != null && selectionEnd != null) {
+          // Finalize selection
+          updateSelectionFromRect()
+          // No longer creating selection
+          isCreatingSelection = false
+        }
+        requestRender()
+      }
     }
+  }
+
+  // ───────────────────────── Selection functions ───────────────────────────────
+
+  private fun clearSelection() {
+    selectionStart = null
+    selectionEnd = null
+    selectedStrokes.clear()
+    selectionBounds.setEmpty()
+    isDragging = false
+    isCreatingSelection = false
+  }
+
+  private fun updateSelectionFromRect() {
+    if (selectionStart == null || selectionEnd == null) return
+
+    // Calculate selection rectangle
+    val left = min(selectionStart!!.x, selectionEnd!!.x)
+    val top = min(selectionStart!!.y, selectionEnd!!.y)
+    val right = max(selectionStart!!.x, selectionEnd!!.x)
+    val bottom = max(selectionStart!!.y, selectionEnd!!.y)
+
+    val selectionRect = RectF(left, top, right, bottom)
+
+    // Select all strokes that intersect with the selection rectangle
+    selectedStrokes.clear()
+    for (stroke in strokes) {
+      if (strokeIntersectsWithRect(stroke, selectionRect)) {
+        selectedStrokes.add(stroke)
+      }
+    }
+
+    // Update the selection bounds to encompass all selected strokes
+    updateSelectionBounds()
+  }
+
+  private fun updateSelectionBounds() {
+    if (selectedStrokes.isEmpty()) {
+      selectionBounds.setEmpty()
+      return
+    }
+
+    // Initialize with first stroke bounds
+    val stroke = selectedStrokes[0]
+    val bounds = calculateStrokeBounds(stroke)
+    selectionBounds.set(bounds)
+
+    // Expand to include all selected strokes
+    for (i in 1 until selectedStrokes.size) {
+      val nextBounds = calculateStrokeBounds(selectedStrokes[i])
+      selectionBounds.union(nextBounds)
+    }
+
+    // Add a small padding
+    selectionBounds.inset(-10f, -10f)
+  }
+
+  private fun calculateStrokeBounds(stroke: Stroke): RectF {
+    if (stroke.points.isEmpty()) return RectF()
+
+    val bounds = RectF()
+
+    // Initialize with first point
+    val firstPoint = stroke.points[0]
+    bounds.set(
+        firstPoint.x + stroke.translation.x,
+        firstPoint.y + stroke.translation.y,
+        firstPoint.x + stroke.translation.x,
+        firstPoint.y + stroke.translation.y)
+
+    // Expand to include all points
+    for (i in 1 until stroke.points.size) {
+      val point = stroke.points[i]
+      val x = point.x + stroke.translation.x
+      val y = point.y + stroke.translation.y
+
+      bounds.left = min(bounds.left, x)
+      bounds.top = min(bounds.top, y)
+      bounds.right = max(bounds.right, x)
+      bounds.bottom = max(bounds.bottom, y)
+    }
+
+    // Add stroke width to bounds
+    val strokeWidth = stroke.thicknessFactor * 5f // Approximate stroke width
+    bounds.inset(-strokeWidth, -strokeWidth)
+
+    return bounds
+  }
+
+  private fun strokeIntersectsWithRect(stroke: Stroke, rect: RectF): Boolean {
+    // Fast rejection: check stroke bounds first
+    val strokeBounds = calculateStrokeBounds(stroke)
+    if (!RectF.intersects(strokeBounds, rect)) return false
+
+    // If any point is inside the rectangle, the stroke intersects
+    for (point in stroke.points) {
+      val x = point.x + stroke.translation.x
+      val y = point.y + stroke.translation.y
+      if (rect.contains(x, y)) return true
+    }
+
+    // Check if any line segment intersects with the rectangle edges
+    val points = stroke.points
+    for (i in 0 until points.size - 1) {
+      val p1 = points[i]
+      val p2 = points[i + 1]
+      val x1 = p1.x + stroke.translation.x
+      val y1 = p1.y + stroke.translation.y
+      val x2 = p2.x + stroke.translation.x
+      val y2 = p2.y + stroke.translation.y
+
+      // Check intersection with rectangle edges
+      if (lineIntersectsRect(x1, y1, x2, y2, rect)) return true
+    }
+
+    return false
+  }
+
+  private fun lineIntersectsRect(x1: Float, y1: Float, x2: Float, y2: Float, rect: RectF): Boolean {
+    // Check if line intersects any of the rectangle's edges
+    return lineIntersectsLine(
+        x1, y1, x2, y2, rect.left, rect.top, rect.right, rect.top) || // Top edge
+        lineIntersectsLine(
+            x1, y1, x2, y2, rect.right, rect.top, rect.right, rect.bottom) || // Right edge
+        lineIntersectsLine(
+            x1, y1, x2, y2, rect.left, rect.bottom, rect.right, rect.bottom) || // Bottom edge
+        lineIntersectsLine(x1, y1, x2, y2, rect.left, rect.top, rect.left, rect.bottom) // Left edge
+  }
+
+  private fun lineIntersectsLine(
+      x1: Float,
+      y1: Float,
+      x2: Float,
+      y2: Float,
+      x3: Float,
+      y3: Float,
+      x4: Float,
+      y4: Float
+  ): Boolean {
+    // Calculate direction vectors
+    val dx1 = x2 - x1
+    val dy1 = y2 - y1
+    val dx2 = x4 - x3
+    val dy2 = y4 - y3
+
+    // Calculate the denominator of the intersection formula
+    val denominator = dy2 * dx1 - dx2 * dy1
+
+    // Lines are parallel if denominator is zero
+    if (denominator == 0f) return false
+
+    // Calculate intersection parameters
+    val ua = (dx2 * (y1 - y3) - dy2 * (x1 - x3)) / denominator
+    val ub = (dx1 * (y1 - y3) - dy1 * (x1 - x3)) / denominator
+
+    // Check if intersection is within both line segments
+    return ua >= 0f && ua <= 1f && ub >= 0f && ub <= 1f
+  }
+
+  private fun updateStrokePath(stroke: Stroke) {
+    // Recreate the path for the stroke with its current translation
+    val path = Path()
+    if (stroke.points.isNotEmpty()) {
+      val first = stroke.points[0]
+      path.moveTo(first.x + stroke.translation.x, first.y + stroke.translation.y)
+
+      for (i in 1 until stroke.points.size) {
+        val point = stroke.points[i]
+        path.lineTo(point.x + stroke.translation.x, point.y + stroke.translation.y)
+      }
+    }
+
+    // Update the path in the cache
+    pathCache[stroke] = path
   }
 
   // ───────────────────────── Eraser optimization ────────────────────────────────
@@ -284,7 +540,9 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
         if (pts.isEmpty()) continue
         if (pts.size == 1) {
           // Single point stroke
-          if (hypot(pts[0].x - eraserX, pts[0].y - eraserY) < eraserRadius) {
+          if (hypot(
+              pts[0].x + stroke.translation.x - eraserX,
+              pts[0].y + stroke.translation.y - eraserY) < eraserRadius) {
             shouldRemove = true
             break
           }
@@ -293,7 +551,13 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
           for (i in 0 until pts.size - 1) {
             val p1 = pts[i]
             val p2 = pts[i + 1]
-            if (distancePointToSegment(eraserX, eraserY, p1.x, p1.y, p2.x, p2.y) < eraserRadius) {
+            if (distancePointToSegment(
+                eraserX,
+                eraserY,
+                p1.x + stroke.translation.x,
+                p1.y + stroke.translation.y,
+                p2.x + stroke.translation.x,
+                p2.y + stroke.translation.y) < eraserRadius) {
               shouldRemove = true
               break
             }
@@ -308,7 +572,16 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
 
     if (toRemove.isNotEmpty()) {
       strokes.removeAll(toRemove)
+      selectedStrokes.removeAll(toRemove)
       toRemove.forEach { pathCache.remove(it) }
+
+      // Update selection bounds if necessary
+      if (selectedStrokes.isNotEmpty()) {
+        updateSelectionBounds()
+      } else {
+        selectionBounds.setEmpty()
+      }
+
       needsFullRedraw = true
       requestRender()
     }
@@ -390,6 +663,25 @@ class DrawingBoardView @JvmOverloads constructor(context: Context, attrs: Attrib
         // Draw collision boundary indicator circle
         canvas.drawCircle(
             currentEraseX, currentEraseY, eraserPaint.strokeWidth / 2f, eraserBoundaryPaint)
+      }
+
+      // Draw selection rectangle if in select mode
+      if (toolMode == ToolMode.SELECT) {
+        // Draw current selection rectangle only during selection creation
+        if (isCreatingSelection && selectionStart != null && selectionEnd != null) {
+          val left = min(selectionStart!!.x, selectionEnd!!.x)
+          val top = min(selectionStart!!.y, selectionEnd!!.y)
+          val right = max(selectionStart!!.x, selectionEnd!!.x)
+          val bottom = max(selectionStart!!.y, selectionEnd!!.y)
+
+          canvas.drawRect(left, top, right, bottom, selectionPaint)
+        }
+
+        // Draw rectangle around selected strokes, but only if we're not currently creating a
+        // selection
+        if (selectedStrokes.isNotEmpty() && !selectionBounds.isEmpty && !isCreatingSelection) {
+          canvas.drawRect(selectionBounds, selectionPaint)
+        }
       }
     } finally {
       holder.unlockCanvasAndPost(canvas)

@@ -18,7 +18,7 @@ export default function App() {
           style={{ flex: 1, width: '100%', height: '100%' }}
           predictionMultiplier={functions.mult}
           predictedStrokeColor={functions.debugStrokePrediction ? '#FF00FF' : undefined}
-          predictAfterNPoints={30}
+          predictAfterNPoints={40}
         />
       </SafeAreaView>
     </GestureHandlerRootView>

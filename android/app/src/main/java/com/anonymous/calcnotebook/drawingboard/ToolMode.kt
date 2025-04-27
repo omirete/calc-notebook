@@ -1,3 +1,7 @@
 package com.anonymous.calcnotebook.drawingboard
 
-enum class ToolMode { DRAW, ERASE, SELECT }
+enum class ToolMode {
+  DRAW,
+  ERASE,
+  SELECT
+}

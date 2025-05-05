@@ -41,6 +41,8 @@ android/**
 # Allow specific files to be tracked
 !android/app/src/main/java/com/anonymous/calcnotebook/MainApplication.kt
 !android/app/src/main/java/com/anonymous/calcnotebook/drawingboard/
+!android/build.gradle
+!android/app/build.gradle
 
 # Ensure parent directories are tracked
 !android/

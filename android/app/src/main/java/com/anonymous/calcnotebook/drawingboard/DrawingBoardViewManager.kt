@@ -35,6 +35,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   private var bgColor = Color.Black
   private var strokeColor = Color.White
   private var strokeSize = 3f
+  private val finishedStrokes = mutableStateOf(emptySet<Stroke>())
 
   override fun createViewInstance(reactContext: ThemedReactContext): ComposeView =
       ComposeView(reactContext).apply { setContent { DrawingBoardComposable() } }
@@ -63,7 +64,6 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   private fun DrawingBoardComposable() {
     val context = LocalContext.current
     val inProgressView = remember { InProgressStrokesView(context) }
-    val finishedStrokes = remember { mutableStateOf(emptySet<Stroke>()) }
     val strokeIds = remember { mutableMapOf<Int, InProgressStrokeId>() }
 
     // renderer & brush live at composition level

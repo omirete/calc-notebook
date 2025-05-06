@@ -1,4 +1,5 @@
-import { SafeAreaView, StyleSheet } from 'react-native';
+import React from 'react';
+import { SafeAreaView, StyleSheet, Button, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { DrawingBoard } from '@/components/DrawingBoardWrapper';
 import Toolbar from '@/components/Toolbar';
@@ -6,19 +7,17 @@ import useToolbar from '@/components/Toolbar/useToolbar';
 
 export default function App() {
   const functions = useToolbar();
+  
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         <Toolbar functions={functions} />
         <DrawingBoard
-          tool={functions.tool}
-          thickness={functions.thickness}
-          color={functions.color}
-          boardColor='#1E1E1E'
+          strokeColor="#000000"
+          strokeSize={5}
+          backgroundColor="#FF00FF"
           style={{ flex: 1, width: '100%', height: '100%' }}
-          predictionMultiplier={functions.mult}
-          predictedStrokeColor={functions.debugStrokePrediction ? '#FF00FF' : undefined}
-          predictAfterNPoints={40}
+          // predictedStrokeColor={functions.debugStrokePrediction ? '#FF00FF' : undefined}
         />
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -29,4 +28,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    padding: 10,
+  }
 });

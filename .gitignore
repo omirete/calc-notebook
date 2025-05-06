@@ -39,10 +39,10 @@ yarn-error.*
 android/**
 
 # Allow specific files to be tracked
-!android/app/src/main/java/com/anonymous/calcnotebook/MainApplication.kt
-!android/app/src/main/java/com/anonymous/calcnotebook/drawingboard/
+!android/app/src/main/java/com/anonymous/calcnotebook/**
 !android/build.gradle
 !android/app/build.gradle
+!android/app/src/main/AndroidManifest.xml
 
 # Ensure parent directories are tracked
 !android/

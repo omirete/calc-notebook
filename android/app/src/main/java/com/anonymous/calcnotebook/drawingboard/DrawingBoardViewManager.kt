@@ -1,9 +1,9 @@
 package com.anonymous.calcnotebook.drawingboard
 
-import androidx.annotation.UiThread
 import android.graphics.Color as AndroidColor
 import android.view.MotionEvent
 import android.widget.FrameLayout
+import androidx.annotation.UiThread
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box

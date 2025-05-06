@@ -13,9 +13,9 @@ export default function App() {
       <SafeAreaView style={styles.container}>
         <Toolbar functions={functions} />
         <DrawingBoard
-          strokeColor="#000000"
-          strokeSize={5}
-          backgroundColor="#FF00FF"
+          strokeColor={functions.color}
+          strokeSize={functions.thickness}
+          backgroundColor="#1F1F1F"
           style={{ flex: 1, width: '100%', height: '100%' }}
           // predictedStrokeColor={functions.debugStrokePrediction ? '#FF00FF' : undefined}
         />

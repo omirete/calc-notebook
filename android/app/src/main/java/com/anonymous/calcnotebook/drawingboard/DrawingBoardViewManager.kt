@@ -32,50 +32,68 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
 
   override fun getName() = "RNDrawingBoard"
 
-  private var bgColor = Color.Black
-  private var strokeColor = Color.White
-  private var strokeSize = 3f
+  // Create state holders
+  private val bgColorState = mutableStateOf(Color.Black)
+  private val strokeColorState = mutableStateOf(Color.White)
+  private val strokeSizeState = mutableStateOf(3f)
   private val finishedStrokes = mutableStateOf(emptySet<Stroke>())
+  
+  // Single shared ComposeView instance to maintain state
+  private var currentComposeView: ComposeView? = null
 
   override fun createViewInstance(reactContext: ThemedReactContext): ComposeView =
-      ComposeView(reactContext).apply { setContent { DrawingBoardComposable() } }
+      ComposeView(reactContext).apply {
+        currentComposeView = this
+        setContent { DrawingBoardComposable() }
+      }
 
   // ---------- React props ----------
   @ReactProp(name = "backgroundColor")
   fun setBackgroundColor(view: ComposeView, hex: String) {
-    bgColor = Color(AndroidColor.parseColor(hex))
-    view.setContent { DrawingBoardComposable() }
+    try {
+      bgColorState.value = Color(AndroidColor.parseColor(hex))
+    } catch (e: Exception) {
+      // Silent catch for invalid colors
+    }
   }
 
   @ReactProp(name = "strokeColor")
   fun setStrokeColor(view: ComposeView, hex: String) {
-    strokeColor = Color(AndroidColor.parseColor(hex))
-    view.setContent { DrawingBoardComposable() }
+    try {
+      strokeColorState.value = Color(AndroidColor.parseColor(hex))
+    } catch (e: Exception) {
+      // Silent catch for invalid colors
+    }
   }
 
   @ReactProp(name = "strokeSize")
   fun setStrokeSize(view: ComposeView, size: Float) {
-    strokeSize = size
-    view.setContent { DrawingBoardComposable() }
+    strokeSizeState.value = size
   }
 
   // ---------- UI ----------
   @Composable
   private fun DrawingBoardComposable() {
+    // Access state directly
+    val bgColor by bgColorState
+    val strokeColor by strokeColorState 
+    val strokeSize by strokeSizeState
+    val currentStrokes by finishedStrokes
+    
     val context = LocalContext.current
     val inProgressView = remember { InProgressStrokesView(context) }
     val strokeIds = remember { mutableMapOf<Int, InProgressStrokeId>() }
 
     // renderer & brush live at composition level
     val renderer = remember { CanvasStrokeRenderer.create() }
-    val defaultBrush =
-        remember(strokeColor, strokeSize) {
-          Brush.createWithColorIntArgb(
-              family = StockBrushes.pressurePenLatest,
-              colorIntArgb = strokeColor.toArgb(),
-              size = strokeSize,
-              epsilon = 0.1f)
-        }
+    
+    // Create a new brush on each recomposition if strokeColor or strokeSize has changed
+    val defaultBrush = Brush.createWithColorIntArgb(
+        family = StockBrushes.pressurePenLatest,
+        colorIntArgb = strokeColor.toArgb(),
+        size = strokeSize,
+        epsilon = 0.1f
+    )
 
     // finished‑stroke callback
     DisposableEffect(inProgressView) {
@@ -83,7 +101,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
           object : InProgressStrokesFinishedListener {
             @UiThread
             override fun onStrokesFinished(strokes: Map<InProgressStrokeId, Stroke>) {
-              finishedStrokes.value += strokes.values
+              finishedStrokes.value = finishedStrokes.value + strokes.values
               inProgressView.removeFinishedStrokes(strokes.keys)
             }
           }
@@ -109,7 +127,16 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                     val idx = event.actionIndex
                     val pid = event.getPointerId(idx)
                     requestUnbufferedDispatch(event)
-                    strokeIds[pid] = inProgressView.startStroke(event, pid, defaultBrush)
+                    
+                    // Always create a fresh brush with current color and size when a new stroke starts
+                    val brush = Brush.createWithColorIntArgb(
+                        family = StockBrushes.pressurePenLatest,
+                        colorIntArgb = strokeColor.toArgb(),
+                        size = strokeSize,
+                        epsilon = 0.1f
+                    )
+                    
+                    strokeIds[pid] = inProgressView.startStroke(event, pid, brush)
                     true
                   }
                   MotionEvent.ACTION_MOVE -> {
@@ -140,11 +167,15 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                 }
               }
             }
+          },
+          update = { frame ->
+            // Ensure the view reflects current state
+            frame.invalidate()
           })
 
       // render finished strokes
       Canvas(Modifier.fillMaxSize()) {
-        finishedStrokes.value.forEach { stroke ->
+        currentStrokes.forEach { stroke ->
           renderer.draw(drawContext.canvas.nativeCanvas, stroke, android.graphics.Matrix())
         }
       }

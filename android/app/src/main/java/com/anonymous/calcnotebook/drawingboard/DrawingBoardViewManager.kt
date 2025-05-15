@@ -130,7 +130,16 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   @ReactProp(name = "tool")
   fun setTool(view: ComposeView, tool: String) {
     toolState.value = tool
-    // Reset selection state when switching tools
+
+    // Special case: if switching to erase tool and there are selected strokes, remove them
+    if (tool == "erase" && selectedStrokeIndicesState.value.isNotEmpty()) {
+      // Remove the selected strokes
+      val selectedIndices = selectedStrokeIndicesState.value
+      finishedStrokes.value =
+          finishedStrokes.value.filterIndexed { idx, _ -> !selectedIndices.contains(idx) }
+    }
+
+    // Reset selection state when switching away from select tool
     if (tool != "select") {
       selectionBoxState.value = null
       isSelectingState.value = false

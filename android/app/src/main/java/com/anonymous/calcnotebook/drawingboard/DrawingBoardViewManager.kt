@@ -40,7 +40,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   private val bgColorState = mutableStateOf(Color.Black)
   private val strokeColorState = mutableStateOf(Color.White)
   private val strokeSizeState = mutableStateOf(3f)
-  private val finishedStrokes = mutableStateOf(emptySet<Stroke>())
+  private val finishedStrokes = mutableStateOf(listOf<Stroke>()) // Use List for reliable updates
   private val toolState = mutableStateOf("draw") // New tool state: "draw" or "erase"
 
   // Track eraser position for visualization
@@ -53,8 +53,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   // Selection state
   private val selectionBoxState = mutableStateOf<Pair<Offset, Offset>?>(null) // (start, end)
   private val isSelectingState = mutableStateOf(false)
-  private val selectedStrokesState = mutableStateOf<Set<Stroke>>(emptySet())
-  private val selectionBoundsState = mutableStateOf<Pair<Offset, Offset>?>(null) // (topLeft, bottomRight)
+  private val selectedStrokeIndicesState =
+      mutableStateOf<Set<Int>>(emptySet()) // Use indices for selection
+  private val selectionBoundsState =
+      mutableStateOf<Pair<Offset, Offset>?>(null) // (topLeft, bottomRight)
 
   // Single shared ComposeView instance to maintain state
   private var currentComposeView: ComposeView? = null
@@ -78,7 +80,26 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   @ReactProp(name = "strokeColor")
   fun setStrokeColor(view: ComposeView, hex: String) {
     try {
-      strokeColorState.value = Color(AndroidColor.parseColor(hex))
+      val newColor = Color(AndroidColor.parseColor(hex))
+      strokeColorState.value = newColor
+      if (toolState.value == "select" && selectedStrokeIndicesState.value.isNotEmpty()) {
+        // Change color of selected strokes by index
+        val updatedStrokes =
+            finishedStrokes.value.mapIndexed { idx, stroke ->
+              if (selectedStrokeIndicesState.value.contains(idx)) {
+                val newBrush =
+                    Brush.createWithColorIntArgb(
+                        family = StockBrushes.pressurePenLatest,
+                        colorIntArgb = newColor.toArgb(),
+                        size = stroke.brush.size,
+                        epsilon = 0.1f)
+                stroke.copy(newBrush)
+              } else stroke
+            }
+        finishedStrokes.value = updatedStrokes
+        // selectedStrokeIndicesState.value = emptySet()
+        // selectionBoundsState.value = null
+      }
     } catch (e: Exception) {
       // Silent catch for invalid colors
     }
@@ -87,6 +108,23 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   @ReactProp(name = "strokeSize")
   fun setStrokeSize(view: ComposeView, size: Float) {
     strokeSizeState.value = size
+    if (toolState.value == "select" && selectedStrokeIndicesState.value.isNotEmpty()) {
+      val updatedStrokes =
+          finishedStrokes.value.mapIndexed { idx, stroke ->
+            if (selectedStrokeIndicesState.value.contains(idx)) {
+              val newBrush =
+                  Brush.createWithColorIntArgb(
+                      family = StockBrushes.pressurePenLatest,
+                      colorIntArgb = stroke.brush.colorIntArgb,
+                      size = size,
+                      epsilon = 0.1f)
+              stroke.copy(newBrush)
+            } else stroke
+          }
+      finishedStrokes.value = updatedStrokes
+      // selectedStrokeIndicesState.value = emptySet()
+      // selectionBoundsState.value = null
+    }
   }
 
   @ReactProp(name = "tool")
@@ -96,7 +134,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
     if (tool != "select") {
       selectionBoxState.value = null
       isSelectingState.value = false
-      selectedStrokesState.value = emptySet()
+      selectedStrokeIndicesState.value = emptySet()
       selectionBoundsState.value = null
     }
   }
@@ -115,7 +153,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
     val eraserPath by eraserPathPoints
     val selectionBox by selectionBoxState
     val isSelecting by isSelectingState
-    val selectedStrokes by selectedStrokesState
+    val selectedStrokeIndices by selectedStrokeIndicesState
     val selectionBounds by selectionBoundsState
 
     val context = LocalContext.current
@@ -316,7 +354,8 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                   }
                   "select" -> {
                     when (event.actionMasked) {
-                      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                      MotionEvent.ACTION_DOWN,
+                      MotionEvent.ACTION_POINTER_DOWN -> {
                         val x = event.x
                         val y = event.y
                         selectionBoxState.value = Pair(Offset(x, y), Offset(x, y))
@@ -332,7 +371,8 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                         }
                         true
                       }
-                      MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                      MotionEvent.ACTION_UP,
+                      MotionEvent.ACTION_POINTER_UP -> {
                         if (isSelectingState.value) {
                           val box = selectionBoxState.value
                           if (box != null) {
@@ -341,21 +381,28 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                             val right = maxOf(start.x, end.x)
                             val top = minOf(start.y, end.y)
                             val bottom = maxOf(start.y, end.y)
-                            val boxRect = ImmutableBox.fromTwoPoints(
-                              ImmutableVec(left, top), ImmutableVec(right, bottom)
-                            )
+                            val boxRect =
+                                ImmutableBox.fromTwoPoints(
+                                    ImmutableVec(left, top), ImmutableVec(right, bottom))
                             // Select strokes intersecting the box
-                            val selected = finishedStrokes.value.filter { stroke ->
-                              stroke.shape.computeCoverageIsGreaterThan(boxRect, 0.001f)
-                            }.toSet()
-                            selectedStrokesState.value = selected
-                            // Compute tight bounds with margin
-                            if (selected.isNotEmpty()) {
+                            val indices =
+                                finishedStrokes.value
+                                    .mapIndexedNotNull { idx, stroke ->
+                                      if (stroke.shape.computeCoverageIsGreaterThan(
+                                          boxRect, 0.001f))
+                                          idx
+                                      else null
+                                    }
+                                    .toSet()
+                            selectedStrokeIndicesState.value = indices
+                            // Compute tight bounds with margin (same as before, but use indices)
+                            if (indices.isNotEmpty()) {
                               var minX = Float.POSITIVE_INFINITY
                               var minY = Float.POSITIVE_INFINITY
                               var maxX = Float.NEGATIVE_INFINITY
                               var maxY = Float.NEGATIVE_INFINITY
-                              selected.forEach { stroke ->
+                              indices.forEach { idx ->
+                                val stroke = finishedStrokes.value[idx]
                                 val mesh = stroke.shape
                                 val groupCount = mesh.getRenderGroupCount()
                                 for (g in 0 until groupCount) {
@@ -374,10 +421,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                                 }
                               }
                               val margin = 16f // px
-                              selectionBoundsState.value = Pair(
-                                Offset(minX - margin, minY - margin),
-                                Offset(maxX + margin, maxY + margin)
-                              )
+                              selectionBoundsState.value =
+                                  Pair(
+                                      Offset(minX - margin, minY - margin),
+                                      Offset(maxX + margin, maxY + margin))
                             } else {
                               selectionBoundsState.value = null
                             }
@@ -396,9 +443,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
               }
             }
           },
-          update = { frame ->
-            frame.invalidate()
-          })
+          update = { frame -> frame.invalidate() })
 
       // render finished strokes
       Canvas(Modifier.fillMaxSize()) {
@@ -426,11 +471,15 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
         val (start, end) = selectionBox
         Canvas(Modifier.fillMaxSize()) {
           drawRect(
-            color = Color.Blue,
-            topLeft = start,
-            size = androidx.compose.ui.geometry.Size(end.x - start.x, end.y - start.y),
-            style = ComposeStroke(width = 2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f, 12f)))
-          )
+              color = Color.Blue,
+              topLeft = start,
+              size = androidx.compose.ui.geometry.Size(end.x - start.x, end.y - start.y),
+              style =
+                  ComposeStroke(
+                      width = 2f,
+                      pathEffect =
+                          androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                              floatArrayOf(12f, 12f))))
         }
       }
       // Render selection bounds (tight, solid)
@@ -439,11 +488,17 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
         val (topLeft, bottomRight) = selectionBounds
         Canvas(Modifier.fillMaxSize()) {
           drawRect(
-            color = Color.Blue,
-            topLeft = topLeft,
-            size = androidx.compose.ui.geometry.Size(bottomRight.x - topLeft.x, bottomRight.y - topLeft.y),
-            style = ComposeStroke(width = 2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8f, 8f)))
-          )
+              color = Color.Blue,
+              topLeft = topLeft,
+              size =
+                  androidx.compose.ui.geometry.Size(
+                      bottomRight.x - topLeft.x, bottomRight.y - topLeft.y),
+              style =
+                  ComposeStroke(
+                      width = 2f,
+                      pathEffect =
+                          androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                              floatArrayOf(8f, 8f))))
         }
       }
     }

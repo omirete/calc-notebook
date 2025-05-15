@@ -50,6 +50,12 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   // Track eraser path for more effective erasing
   private val eraserPathPoints = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
 
+  // Selection state
+  private val selectionBoxState = mutableStateOf<Pair<Offset, Offset>?>(null) // (start, end)
+  private val isSelectingState = mutableStateOf(false)
+  private val selectedStrokesState = mutableStateOf<Set<Stroke>>(emptySet())
+  private val selectionBoundsState = mutableStateOf<Pair<Offset, Offset>?>(null) // (topLeft, bottomRight)
+
   // Single shared ComposeView instance to maintain state
   private var currentComposeView: ComposeView? = null
 
@@ -86,6 +92,13 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   @ReactProp(name = "tool")
   fun setTool(view: ComposeView, tool: String) {
     toolState.value = tool
+    // Reset selection state when switching tools
+    if (tool != "select") {
+      selectionBoxState.value = null
+      isSelectingState.value = false
+      selectedStrokesState.value = emptySet()
+      selectionBoundsState.value = null
+    }
   }
 
   // ---------- UI ----------
@@ -100,6 +113,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
     val eraserPosition by eraserPositionState
     val eraserActive by eraserActiveState
     val eraserPath by eraserPathPoints
+    val selectionBox by selectionBoxState
+    val isSelecting by isSelectingState
+    val selectedStrokes by selectedStrokesState
+    val selectionBounds by selectionBoundsState
 
     val context = LocalContext.current
     val inProgressView = remember { InProgressStrokesView(context) }
@@ -199,7 +216,6 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                 predictor.record(event)
                 val predicted = predictor.predict()
 
-                // Handle based on current tool
                 when (tool) {
                   "draw" -> {
                     // Drawing behavior
@@ -298,13 +314,89 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                       else -> true
                     }
                   }
+                  "select" -> {
+                    when (event.actionMasked) {
+                      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                        val x = event.x
+                        val y = event.y
+                        selectionBoxState.value = Pair(Offset(x, y), Offset(x, y))
+                        isSelectingState.value = true
+                        true
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                        if (isSelectingState.value) {
+                          val x = event.x
+                          val y = event.y
+                          val start = selectionBoxState.value?.first ?: Offset(x, y)
+                          selectionBoxState.value = Pair(start, Offset(x, y))
+                        }
+                        true
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                        if (isSelectingState.value) {
+                          val box = selectionBoxState.value
+                          if (box != null) {
+                            val (start, end) = box
+                            val left = minOf(start.x, end.x)
+                            val right = maxOf(start.x, end.x)
+                            val top = minOf(start.y, end.y)
+                            val bottom = maxOf(start.y, end.y)
+                            val boxRect = ImmutableBox.fromTwoPoints(
+                              ImmutableVec(left, top), ImmutableVec(right, bottom)
+                            )
+                            // Select strokes intersecting the box
+                            val selected = finishedStrokes.value.filter { stroke ->
+                              stroke.shape.computeCoverageIsGreaterThan(boxRect, 0.001f)
+                            }.toSet()
+                            selectedStrokesState.value = selected
+                            // Compute tight bounds with margin
+                            if (selected.isNotEmpty()) {
+                              var minX = Float.POSITIVE_INFINITY
+                              var minY = Float.POSITIVE_INFINITY
+                              var maxX = Float.NEGATIVE_INFINITY
+                              var maxY = Float.NEGATIVE_INFINITY
+                              selected.forEach { stroke ->
+                                val mesh = stroke.shape
+                                val groupCount = mesh.getRenderGroupCount()
+                                for (g in 0 until groupCount) {
+                                  val outlineCount = mesh.getOutlineCount(g)
+                                  for (o in 0 until outlineCount) {
+                                    val vertexCount = mesh.getOutlineVertexCount(g, o)
+                                    val outPos = androidx.ink.geometry.MutableVec()
+                                    for (v in 0 until vertexCount) {
+                                      val pos = mesh.populateOutlinePosition(g, o, v, outPos)
+                                      minX = minOf(minX, pos.x)
+                                      minY = minOf(minY, pos.y)
+                                      maxX = maxOf(maxX, pos.x)
+                                      maxY = maxOf(maxY, pos.y)
+                                    }
+                                  }
+                                }
+                              }
+                              val margin = 16f // px
+                              selectionBoundsState.value = Pair(
+                                Offset(minX - margin, minY - margin),
+                                Offset(maxX + margin, maxY + margin)
+                              )
+                            } else {
+                              selectionBoundsState.value = null
+                            }
+                          }
+                          // Hide manual box
+                          selectionBoxState.value = null
+                          isSelectingState.value = false
+                        }
+                        true
+                      }
+                      else -> true
+                    }
+                  }
                   else -> false
                 }
               }
             }
           },
           update = { frame ->
-            // Ensure the view reflects current state
             frame.invalidate()
           })
 
@@ -325,6 +417,33 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                 center = Offset(x, y),
                 style = ComposeStroke(width = 2f))
           }
+        }
+      }
+
+      // Render selection box (manual, dashed)
+      val selectionBox = selectionBoxState.value
+      if (tool == "select" && selectionBox != null) {
+        val (start, end) = selectionBox
+        Canvas(Modifier.fillMaxSize()) {
+          drawRect(
+            color = Color.Blue,
+            topLeft = start,
+            size = androidx.compose.ui.geometry.Size(end.x - start.x, end.y - start.y),
+            style = ComposeStroke(width = 2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f, 12f)))
+          )
+        }
+      }
+      // Render selection bounds (tight, solid)
+      val selectionBounds = selectionBoundsState.value
+      if (tool == "select" && selectionBounds != null) {
+        val (topLeft, bottomRight) = selectionBounds
+        Canvas(Modifier.fillMaxSize()) {
+          drawRect(
+            color = Color.Blue,
+            topLeft = topLeft,
+            size = androidx.compose.ui.geometry.Size(bottomRight.x - topLeft.x, bottomRight.y - topLeft.y),
+            style = ComposeStroke(width = 2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8f, 8f)))
+          )
         }
       }
     }

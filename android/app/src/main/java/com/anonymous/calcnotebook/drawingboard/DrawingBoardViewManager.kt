@@ -10,7 +10,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke as ComposeStroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
@@ -21,6 +23,8 @@ import androidx.ink.authoring.InProgressStrokesFinishedListener
 import androidx.ink.authoring.InProgressStrokesView
 import androidx.ink.brush.Brush
 import androidx.ink.brush.StockBrushes
+import androidx.ink.geometry.ImmutableBox
+import androidx.ink.geometry.ImmutableVec
 import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
 import androidx.ink.strokes.Stroke
 import androidx.input.motionprediction.MotionEventPredictor
@@ -37,7 +41,15 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
   private val strokeColorState = mutableStateOf(Color.White)
   private val strokeSizeState = mutableStateOf(3f)
   private val finishedStrokes = mutableStateOf(emptySet<Stroke>())
-  
+  private val toolState = mutableStateOf("draw") // New tool state: "draw" or "erase"
+
+  // Track eraser position for visualization
+  private val eraserPositionState = mutableStateOf<Pair<Float, Float>?>(null)
+  private val eraserActiveState = mutableStateOf(false)
+
+  // Track eraser path for more effective erasing
+  private val eraserPathPoints = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
+
   // Single shared ComposeView instance to maintain state
   private var currentComposeView: ComposeView? = null
 
@@ -71,29 +83,92 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
     strokeSizeState.value = size
   }
 
+  @ReactProp(name = "tool")
+  fun setTool(view: ComposeView, tool: String) {
+    toolState.value = tool
+  }
+
   // ---------- UI ----------
   @Composable
   private fun DrawingBoardComposable() {
     // Access state directly
     val bgColor by bgColorState
-    val strokeColor by strokeColorState 
+    val strokeColor by strokeColorState
     val strokeSize by strokeSizeState
     val currentStrokes by finishedStrokes
-    
+    val tool by toolState
+    val eraserPosition by eraserPositionState
+    val eraserActive by eraserActiveState
+    val eraserPath by eraserPathPoints
+
     val context = LocalContext.current
     val inProgressView = remember { InProgressStrokesView(context) }
     val strokeIds = remember { mutableMapOf<Int, InProgressStrokeId>() }
 
     // renderer & brush live at composition level
     val renderer = remember { CanvasStrokeRenderer.create() }
-    
+
     // Create a new brush on each recomposition if strokeColor or strokeSize has changed
-    val defaultBrush = Brush.createWithColorIntArgb(
-        family = StockBrushes.pressurePenLatest,
-        colorIntArgb = strokeColor.toArgb(),
-        size = strokeSize,
-        epsilon = 0.1f
-    )
+    val defaultBrush =
+        Brush.createWithColorIntArgb(
+            family = StockBrushes.pressurePenLatest,
+            colorIntArgb = strokeColor.toArgb(),
+            size = strokeSize,
+            epsilon = 0.1f)
+
+    // Coroutine scope for eraser operations
+    val scope = rememberCoroutineScope()
+
+    // Eraser function to remove strokes
+    fun eraseWholeStrokes(eraserCenter: ImmutableVec, eraserRadius: Float) {
+      // Use a much more aggressive threshold for detection
+      val threshold = 0.001f
+
+      // Create a bounding box for the eraser circle
+      val left = eraserCenter.x - eraserRadius
+      val top = eraserCenter.y - eraserRadius
+      val right = eraserCenter.x + eraserRadius
+      val bottom = eraserCenter.y + eraserRadius
+
+      // Create a box for initial quick intersection check
+      val eraserBox =
+          ImmutableBox.fromTwoPoints(ImmutableVec(left, top), ImmutableVec(right, bottom))
+
+      // Improved: Two-step eraser detection (box for quick reject, then circle for accuracy)
+      val eraserRadiusSquared = eraserRadius * eraserRadius
+      val strokesToErase =
+          finishedStrokes.value.filter { stroke ->
+            // Step 1: Quick box-based rejection test
+            if (!stroke.shape.computeCoverageIsGreaterThan(eraserBox, 0.001f)) {
+              return@filter false
+            }
+            // Step 2: Accurate circular hit test using outline vertices
+            val mesh = stroke.shape
+            val groupCount = mesh.getRenderGroupCount()
+            val hit =
+                (0 until groupCount).any { groupIdx ->
+                  val outlineCount = mesh.getOutlineCount(groupIdx)
+                  (0 until outlineCount).any { outlineIdx ->
+                    val vertexCount = mesh.getOutlineVertexCount(groupIdx, outlineIdx)
+                    val outPos = androidx.ink.geometry.MutableVec()
+                    (0 until vertexCount).any { vertexIdx ->
+                      val pos =
+                          mesh.populateOutlinePosition(groupIdx, outlineIdx, vertexIdx, outPos)
+                      val dx = pos.x - eraserCenter.x
+                      val dy = pos.y - eraserCenter.y
+                      val distSq = dx * dx + dy * dy
+                      distSq <= eraserRadiusSquared
+                    }
+                  }
+                }
+            hit
+          }
+
+      if (strokesToErase.isNotEmpty()) {
+        // Update the strokes collection without the erased strokes
+        finishedStrokes.value = finishedStrokes.value - strokesToErase
+      }
+    }
 
     // finished‑stroke callback
     DisposableEffect(inProgressView) {
@@ -101,7 +176,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
           object : InProgressStrokesFinishedListener {
             @UiThread
             override fun onStrokesFinished(strokes: Map<InProgressStrokeId, Stroke>) {
-              finishedStrokes.value = finishedStrokes.value + strokes.values
+              // Only add the finished strokes if we're in draw mode
+              if (tool == "draw") {
+                finishedStrokes.value = finishedStrokes.value + strokes.values
+              }
               inProgressView.removeFinishedStrokes(strokes.keys)
             }
           }
@@ -121,47 +199,104 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                 predictor.record(event)
                 val predicted = predictor.predict()
 
-                when (event.actionMasked) {
-                  MotionEvent.ACTION_DOWN,
-                  MotionEvent.ACTION_POINTER_DOWN -> {
-                    val idx = event.actionIndex
-                    val pid = event.getPointerId(idx)
-                    requestUnbufferedDispatch(event)
-                    
-                    // Always create a fresh brush with current color and size when a new stroke starts
-                    val brush = Brush.createWithColorIntArgb(
-                        family = StockBrushes.pressurePenLatest,
-                        colorIntArgb = strokeColor.toArgb(),
-                        size = strokeSize,
-                        epsilon = 0.1f
-                    )
-                    
-                    strokeIds[pid] = inProgressView.startStroke(event, pid, brush)
-                    true
-                  }
-                  MotionEvent.ACTION_MOVE -> {
-                    for (i in 0 until event.pointerCount) {
-                      val pid = event.getPointerId(i)
-                      strokeIds[pid]?.let { sid ->
-                        inProgressView.addToStroke(event, pid, sid, predicted)
+                // Handle based on current tool
+                when (tool) {
+                  "draw" -> {
+                    // Drawing behavior
+                    when (event.actionMasked) {
+                      MotionEvent.ACTION_DOWN,
+                      MotionEvent.ACTION_POINTER_DOWN -> {
+                        val idx = event.actionIndex
+                        val pid = event.getPointerId(idx)
+                        requestUnbufferedDispatch(event)
+
+                        // Always create a fresh brush with current color and size when a new stroke
+                        // starts
+                        val brush =
+                            Brush.createWithColorIntArgb(
+                                family = StockBrushes.pressurePenLatest,
+                                colorIntArgb = strokeColor.toArgb(),
+                                size = strokeSize,
+                                epsilon = 0.1f)
+
+                        strokeIds[pid] = inProgressView.startStroke(event, pid, brush)
+                        true
                       }
+                      MotionEvent.ACTION_MOVE -> {
+                        for (i in 0 until event.pointerCount) {
+                          val pid = event.getPointerId(i)
+                          strokeIds[pid]?.let { sid ->
+                            inProgressView.addToStroke(event, pid, sid, predicted)
+                          }
+                        }
+                        true
+                      }
+                      MotionEvent.ACTION_UP,
+                      MotionEvent.ACTION_POINTER_UP -> {
+                        val idx = event.actionIndex
+                        val pid = event.getPointerId(idx)
+                        strokeIds.remove(pid)?.let { sid ->
+                          inProgressView.finishStroke(event, pid, sid)
+                        }
+                        performClick()
+                        true
+                      }
+                      MotionEvent.ACTION_CANCEL -> {
+                        strokeIds.forEach { (_, sid) -> inProgressView.cancelStroke(sid, event) }
+                        strokeIds.clear()
+                        true
+                      }
+                      else -> false
                     }
-                    true
                   }
-                  MotionEvent.ACTION_UP,
-                  MotionEvent.ACTION_POINTER_UP -> {
-                    val idx = event.actionIndex
-                    val pid = event.getPointerId(idx)
-                    strokeIds.remove(pid)?.let { sid ->
-                      inProgressView.finishStroke(event, pid, sid)
+                  "erase" -> {
+                    // Eraser behavior
+                    when (event.actionMasked) {
+                      MotionEvent.ACTION_DOWN,
+                      MotionEvent.ACTION_POINTER_DOWN,
+                      MotionEvent.ACTION_MOVE -> {
+                        // Create circular eraser around touch point
+                        val eraserRadius = strokeSize * 10
+                        val x = event.x
+                        val y = event.y
+
+                        // Create center point for the circle
+                        val center = ImmutableVec(x, y)
+
+                        // Call eraser function with circle parameters
+                        eraseWholeStrokes(center, eraserRadius)
+
+                        // Log current number of strokes - helpful for debugging
+                        System.out.println(
+                            "Current number of strokes: ${finishedStrokes.value.size}")
+
+                        // Update eraser position state
+                        eraserPositionState.value = Pair(x, y)
+                        eraserActiveState.value = true
+
+                        // Track eraser path for enhanced erasing
+                        val pathPoints = eraserPathPoints.value.toMutableList()
+                        pathPoints.add(Pair(x, y))
+                        // Limit path points to avoid memory issues
+                        if (pathPoints.size > 100) {
+                          pathPoints.removeAt(0)
+                        }
+                        eraserPathPoints.value = pathPoints
+
+                        true
+                      }
+                      MotionEvent.ACTION_UP,
+                      MotionEvent.ACTION_POINTER_UP -> {
+                        // Deactivate eraser on touch up
+                        eraserActiveState.value = false
+
+                        // Clear eraser path here if you don't want to persist the path
+                        eraserPathPoints.value = emptyList()
+
+                        true
+                      }
+                      else -> true
                     }
-                    performClick()
-                    true
-                  }
-                  MotionEvent.ACTION_CANCEL -> {
-                    strokeIds.forEach { (_, sid) -> inProgressView.cancelStroke(sid, event) }
-                    strokeIds.clear()
-                    true
                   }
                   else -> false
                 }
@@ -177,6 +312,19 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
       Canvas(Modifier.fillMaxSize()) {
         currentStrokes.forEach { stroke ->
           renderer.draw(drawContext.canvas.nativeCanvas, stroke, android.graphics.Matrix())
+        }
+
+        // Render eraser position indicator if eraser is active
+        if (eraserActive) {
+          eraserPosition?.let { (x, y) ->
+            val eraserSize =
+                strokeSize * 10 // Changed from 6x to 10x to match actual eraser collision size
+            drawCircle(
+                Color.Red,
+                radius = eraserSize,
+                center = Offset(x, y),
+                style = ComposeStroke(width = 2f))
+          }
         }
       }
     }

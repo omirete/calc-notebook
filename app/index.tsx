@@ -13,6 +13,7 @@ export default function App() {
       <SafeAreaView style={styles.container}>
         <Toolbar functions={functions} />
         <DrawingBoard
+          tool={functions.tool}
           strokeColor={functions.color}
           strokeSize={functions.thickness}
           backgroundColor="#1F1F1F"

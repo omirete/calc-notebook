@@ -23,10 +23,13 @@ import androidx.ink.authoring.InProgressStrokesFinishedListener
 import androidx.ink.authoring.InProgressStrokesView
 import androidx.ink.brush.Brush
 import androidx.ink.brush.StockBrushes
+import androidx.ink.geometry.ImmutableAffineTransform
 import androidx.ink.geometry.ImmutableBox
 import androidx.ink.geometry.ImmutableVec
 import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
+import androidx.ink.strokes.MutableStrokeInputBatch
 import androidx.ink.strokes.Stroke
+import androidx.ink.strokes.StrokeInput
 import androidx.input.motionprediction.MotionEventPredictor
 import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
@@ -57,6 +60,11 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
       mutableStateOf<Set<Int>>(emptySet()) // Use indices for selection
   private val selectionBoundsState =
       mutableStateOf<Pair<Offset, Offset>?>(null) // (topLeft, bottomRight)
+
+  // Dragging state
+  private val isDraggingState = mutableStateOf(false)
+  private val dragStartPositionState = mutableStateOf<Offset?>(null)
+  private val strokeTranslationsState = mutableStateOf<Map<Int, Pair<Float, Float>>>(emptyMap())
 
   // Single shared ComposeView instance to maintain state
   private var currentComposeView: ComposeView? = null
@@ -97,8 +105,6 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
               } else stroke
             }
         finishedStrokes.value = updatedStrokes
-        // selectedStrokeIndicesState.value = emptySet()
-        // selectionBoundsState.value = null
       }
     } catch (e: Exception) {
       // Silent catch for invalid colors
@@ -122,8 +128,6 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
             } else stroke
           }
       finishedStrokes.value = updatedStrokes
-      // selectedStrokeIndicesState.value = emptySet()
-      // selectionBoundsState.value = null
     }
   }
 
@@ -137,6 +141,8 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
       val selectedIndices = selectedStrokeIndicesState.value
       finishedStrokes.value =
           finishedStrokes.value.filterIndexed { idx, _ -> !selectedIndices.contains(idx) }
+      // Clear stale selection to avoid referencing removed indices
+      selectedStrokeIndicesState.value = emptySet()
     }
 
     // Reset selection state when switching away from select tool
@@ -145,6 +151,9 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
       isSelectingState.value = false
       selectedStrokeIndicesState.value = emptySet()
       selectionBoundsState.value = null
+      // Also reset dragging state
+      isDraggingState.value = false
+      dragStartPositionState.value = null
     }
   }
 
@@ -164,6 +173,9 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
     val isSelecting by isSelectingState
     val selectedStrokeIndices by selectedStrokeIndicesState
     val selectionBounds by selectionBoundsState
+    val isDragging by isDraggingState
+    val dragStartPosition by dragStartPositionState
+    val strokeTranslations by strokeTranslationsState
 
     val context = LocalContext.current
     val inProgressView = remember { InProgressStrokesView(context) }
@@ -234,7 +246,7 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
       }
     }
 
-    // finished‑stroke callback
+    // finished-stroke callback
     DisposableEffect(inProgressView) {
       val listener =
           object : InProgressStrokesFinishedListener {
@@ -367,14 +379,65 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                       MotionEvent.ACTION_POINTER_DOWN -> {
                         val x = event.x
                         val y = event.y
+
+                        // Check if we're inside the selection bounds (to drag)
+                        val bounds = selectionBoundsState.value
+                        if (bounds != null && selectedStrokeIndicesState.value.isNotEmpty()) {
+                          val (topLeft, bottomRight) = bounds
+                          if (x >= topLeft.x &&
+                              x <= bottomRight.x &&
+                              y >= topLeft.y &&
+                              y <= bottomRight.y) {
+                            // Start dragging
+                            isDraggingState.value = true
+                            dragStartPositionState.value = Offset(x, y)
+                            // Skip selection, we're in drag mode
+                            return@setOnTouchListener true
+                          }
+                        }
+
+                        // Otherwise, start a new selection
                         selectionBoxState.value = Pair(Offset(x, y), Offset(x, y))
                         isSelectingState.value = true
+                        // Reset dragging state
+                        isDraggingState.value = false
+                        dragStartPositionState.value = null
                         true
                       }
                       MotionEvent.ACTION_MOVE -> {
-                        if (isSelectingState.value) {
-                          val x = event.x
-                          val y = event.y
+                        val x = event.x
+                        val y = event.y
+
+                        if (isDraggingState.value) {
+                          // We're dragging the selected strokes
+                          val startPos = dragStartPositionState.value
+                          if (startPos != null) {
+                            val dx = x - startPos.x
+                            val dy = y - startPos.y
+
+                            // Update translations for selected strokes
+                            val currentTranslations = strokeTranslationsState.value.toMutableMap()
+                            selectedStrokeIndicesState.value.forEach { idx ->
+                              val (oldDx, oldDy) = currentTranslations[idx] ?: Pair(0f, 0f)
+                              currentTranslations[idx] = Pair(oldDx + dx, oldDy + dy)
+                            }
+                            strokeTranslationsState.value = currentTranslations
+
+                            // Update selection bounds
+                            val bounds = selectionBoundsState.value
+                            if (bounds != null) {
+                              val (topLeft, bottomRight) = bounds
+                              selectionBoundsState.value =
+                                  Pair(
+                                      Offset(topLeft.x + dx, topLeft.y + dy),
+                                      Offset(bottomRight.x + dx, bottomRight.y + dy))
+                            }
+
+                            // Update drag start position for the next move
+                            dragStartPositionState.value = Offset(x, y)
+                          }
+                        } else if (isSelectingState.value) {
+                          // We're making a selection box
                           val start = selectionBoxState.value?.first ?: Offset(x, y)
                           selectionBoxState.value = Pair(start, Offset(x, y))
                         }
@@ -382,7 +445,49 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                       }
                       MotionEvent.ACTION_UP,
                       MotionEvent.ACTION_POINTER_UP -> {
-                        if (isSelectingState.value) {
+                        if (isDraggingState.value) {
+                          // End of dragging
+                          isDraggingState.value = false
+                          dragStartPositionState.value = null
+                          // Persist the translations
+                          finishedStrokes.value =
+                              finishedStrokes.value.mapIndexed { idx, stroke ->
+                                if (selectedStrokeIndicesState.value.contains(idx)) {
+                                  val (dx, dy) = strokeTranslationsState.value[idx] ?: Pair(0f, 0f)
+                                  // Map original inputs to new translated inputs
+                                  val originalInputs = stroke.inputs
+                                  val translatedInputs = MutableStrokeInputBatch()
+                                  // Iterate over original inputs by index and translate them
+                                  for (i in 0 until originalInputs.size) {
+                                    val input = originalInputs.get(i)
+                                    // Create a new input with translated coordinates
+                                    var translatedInput = StrokeInput()
+                                    originalInputs.populate(i, translatedInput)
+                                    translatedInput.update(
+                                        x = translatedInput.x + dx,
+                                        y = translatedInput.y + dy,
+                                        elapsedTimeMillis = translatedInput.elapsedTimeMillis,
+                                        toolType = translatedInput.toolType,
+                                        strokeUnitLengthCm = translatedInput.strokeUnitLengthCm,
+                                        pressure = translatedInput.pressure,
+                                        tiltRadians = translatedInput.tiltRadians,
+                                        orientationRadians = translatedInput.orientationRadians,
+                                    )
+                                    translatedInputs.addOrThrow(translatedInput)
+                                  }
+                                  // Create a new stroke with the translated inputs
+                                  val newStroke =
+                                      Stroke(brush = stroke.brush, inputs = translatedInputs)
+
+                                  // Reset translation transformations
+                                  strokeTranslationsState.value =
+                                      strokeTranslationsState.value - idx
+                                  newStroke
+                                } else {
+                                  stroke
+                                }
+                              }
+                        } else if (isSelectingState.value) {
                           val box = selectionBoxState.value
                           if (box != null) {
                             val (start, end) = box
@@ -404,6 +509,15 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
                                     }
                                     .toSet()
                             selectedStrokeIndicesState.value = indices
+
+                            val currentTranslations = strokeTranslationsState.value.toMutableMap()
+                            indices.forEach { idx ->
+                              if (!currentTranslations.containsKey(idx)) {
+                                currentTranslations[idx] = Pair(0f, 0f)
+                              }
+                            }
+                            strokeTranslationsState.value = currentTranslations
+
                             // Compute tight bounds with margin (same as before, but use indices)
                             if (indices.isNotEmpty()) {
                               var minX = Float.POSITIVE_INFINITY
@@ -456,8 +570,22 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
 
       // render finished strokes
       Canvas(Modifier.fillMaxSize()) {
-        currentStrokes.forEach { stroke ->
-          renderer.draw(drawContext.canvas.nativeCanvas, stroke, android.graphics.Matrix())
+        currentStrokes.forEachIndexed { index, stroke ->
+          // Retrieve the cumulative translation for this stroke (0,0 if none)
+          val (dx, dy) = strokeTranslations[index] ?: Pair(0f, 0f)
+
+          // Build the transform object to pass to the renderer
+          val translateTransform = ImmutableAffineTransform.translate(ImmutableVec(dx, dy))
+
+          // The renderer needs two things:
+          //  1) the canvas translated
+          //  2) the same transform passed in
+          val nativeCanvas = drawContext.canvas.nativeCanvas
+          nativeCanvas.save()
+          nativeCanvas.translate(dx, dy) // (1) move the canvas
+          renderer.draw( // (2) tell the renderer about it
+              canvas = nativeCanvas, stroke = stroke, strokeToScreenTransform = translateTransform)
+          nativeCanvas.restore()
         }
 
         // Render eraser position indicator if eraser is active

@@ -97,10 +97,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
               if (selectedStrokeIndicesState.value.contains(idx)) {
                 val newBrush =
                     Brush.createWithColorIntArgb(
-                        family = StockBrushes.pressurePenLatest,
+                        family = stroke.brush.family,
                         colorIntArgb = newColor.toArgb(),
                         size = stroke.brush.size,
-                        epsilon = 0.1f)
+                        epsilon = stroke.brush.epsilon)
                 stroke.copy(newBrush)
               } else stroke
             }
@@ -120,10 +120,10 @@ class DrawingBoardViewManager : SimpleViewManager<ComposeView>() {
             if (selectedStrokeIndicesState.value.contains(idx)) {
               val newBrush =
                   Brush.createWithColorIntArgb(
-                      family = StockBrushes.pressurePenLatest,
+                      family = stroke.brush.family,
                       colorIntArgb = stroke.brush.colorIntArgb,
                       size = size,
-                      epsilon = 0.1f)
+                      epsilon = stroke.brush.epsilon)
               stroke.copy(newBrush)
             } else stroke
           }
